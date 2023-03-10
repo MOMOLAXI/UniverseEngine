@@ -1,0 +1,356 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using UnityEditor;
+using UnityEngine;
+
+namespace Universe
+{
+	[Serializable]
+	public class AssetBundleCollector
+	{
+		/// <summary>
+		/// 收集路径
+		/// 注意：支持文件夹或单个资源文件
+		/// </summary>
+		public string CollectPath = string.Empty;
+
+		/// <summary>
+		/// 收集器的GUID
+		/// </summary>
+		public string CollectorGuid = string.Empty;
+
+		/// <summary>
+		/// 收集器类型
+		/// </summary>
+		public ECollectorType CollectorType = ECollectorType.MainAssetCollector;
+
+		/// <summary>
+		/// 寻址规则类名
+		/// </summary>
+		public string AddressRuleName = nameof(AddressByFileName);
+
+		/// <summary>
+		/// 打包规则类名
+		/// </summary>
+		public string PackRuleName = nameof(PackDirectory);
+
+		/// <summary>
+		/// 过滤规则类名
+		/// </summary>
+		public string FilterRuleName = nameof(CollectAll);
+
+		/// <summary>
+		/// 资源分类标签
+		/// </summary>
+		public string AssetTags = string.Empty;
+
+		/// <summary>
+		/// 用户自定义数据
+		/// </summary>
+		public string UserData = string.Empty;
+
+
+		/// <summary>
+		/// 收集器是否有效
+		/// </summary>
+		public bool IsValid()
+		{
+			if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(CollectPath) == null)
+				return false;
+
+			if (CollectorType == ECollectorType.None)
+				return false;
+
+			if (AssetBundleCollectorSettingData.HasAddressRuleName(AddressRuleName) == false)
+				return false;
+
+			if (AssetBundleCollectorSettingData.HasPackRuleName(PackRuleName) == false)
+				return false;
+
+			if (AssetBundleCollectorSettingData.HasFilterRuleName(FilterRuleName) == false)
+				return false;
+
+			return true;
+		}
+
+		/// <summary>
+		/// 检测配置错误
+		/// </summary>
+		public void CheckConfigError()
+		{
+			string assetGuid = AssetDatabase.AssetPathToGUID(CollectPath);
+			if (string.IsNullOrEmpty(assetGuid))
+				throw new($"Invalid collect path : {CollectPath}");
+
+			if (CollectorType == ECollectorType.None)
+				throw new($"{nameof(ECollectorType)}.{ECollectorType.None} is invalid in collector : {CollectPath}");
+
+			if (AssetBundleCollectorSettingData.HasPackRuleName(PackRuleName) == false)
+				throw new($"Invalid {nameof(IPackRule)} class type : {PackRuleName} in collector : {CollectPath}");
+
+			if (AssetBundleCollectorSettingData.HasFilterRuleName(FilterRuleName) == false)
+				throw new($"Invalid {nameof(IFilterRule)} class type : {FilterRuleName} in collector : {CollectPath}");
+
+			if (AssetBundleCollectorSettingData.HasAddressRuleName(AddressRuleName) == false)
+				throw new($"Invalid {nameof(IAddressRule)} class type : {AddressRuleName} in collector : {CollectPath}");
+		}
+
+		/// <summary>
+		/// 修复配置错误
+		/// </summary>
+		public bool FixConfigError()
+		{
+			bool isFixed = false;
+
+			if (string.IsNullOrEmpty(CollectorGuid) == false)
+			{
+				string convertAssetPath = AssetDatabase.GUIDToAssetPath(CollectorGuid);
+				if (string.IsNullOrEmpty(convertAssetPath))
+				{
+					Debug.LogWarning($"Collector GUID {CollectorGuid} is invalid and has been auto removed !");
+					CollectorGuid = string.Empty;
+					isFixed = true;
+				}
+				else
+				{
+					if (CollectPath != convertAssetPath)
+					{
+						CollectPath = convertAssetPath;
+						isFixed = true;
+						Debug.LogWarning($"Fix collect path : {CollectPath} -> {convertAssetPath}");
+					}
+				}
+			}
+
+			/*
+			string convertGUID = AssetDatabase.AssetPathToGUID(CollectPath);
+			if(string.IsNullOrEmpty(convertGUID) == false)
+			{
+				CollectorGUID = convertGUID;
+			}
+			*/
+
+			return isFixed;
+		}
+
+		/// <summary>
+		/// 获取打包收集的资源文件
+		/// </summary>
+		public List<CollectAssetInfo> GetAllCollectAssets(CollectCommand command, AssetBundleCollectorGroup group)
+		{
+			// 注意：模拟构建模式下只收集主资源
+			if (command.BuildMode == EBuildMode.SimulateBuild)
+			{
+				if (CollectorType != ECollectorType.MainAssetCollector)
+					return new();
+			}
+
+			Dictionary<string, CollectAssetInfo> result = new(1000);
+
+			// 检测是否为原生资源打包规则
+			IPackRule packRuleInstance = AssetBundleCollectorSettingData.GetPackRuleInstance(PackRuleName);
+			bool isRawFilePackRule = packRuleInstance.IsRawFilePackRule();
+
+			// 检测原生资源包的收集器类型
+			if (isRawFilePackRule && CollectorType != ECollectorType.MainAssetCollector)
+				throw new($"The raw file pack rule must be set to {nameof(ECollectorType)}.{ECollectorType.MainAssetCollector} : {CollectPath}");
+
+			if (string.IsNullOrEmpty(CollectPath))
+				throw new($"The collect path is null or empty in group : {group.GroupName}");
+
+			// 收集打包资源
+			if (AssetDatabase.IsValidFolder(CollectPath))
+			{
+				string collectDirectory = CollectPath;
+				string[] findAssets = UniverseEditor.FindAssets(EAssetSearchType.All, collectDirectory);
+				foreach (string assetPath in findAssets)
+				{
+					if (IsValidateAsset(assetPath, isRawFilePackRule) && IsCollectAsset(assetPath))
+					{
+						if (result.ContainsKey(assetPath) == false)
+						{
+							CollectAssetInfo collectAssetInfo = CreateCollectAssetInfo(command, group, assetPath, isRawFilePackRule);
+							result.Add(assetPath, collectAssetInfo);
+						}
+						else
+						{
+							throw new($"The collecting asset file is existed : {assetPath} in collector : {CollectPath}");
+						}
+					}
+				}
+			}
+			else
+			{
+				string assetPath = CollectPath;
+				if (IsValidateAsset(assetPath, isRawFilePackRule) && IsCollectAsset(assetPath))
+				{
+					CollectAssetInfo collectAssetInfo = CreateCollectAssetInfo(command, group, assetPath, isRawFilePackRule);
+					result.Add(assetPath, collectAssetInfo);
+				}
+				else
+				{
+					throw new($"The collecting single asset file is invalid : {assetPath} in collector : {CollectPath}");
+				}
+			}
+
+			// 检测可寻址地址是否重复
+			if (command.EnableAddressable)
+			{
+				HashSet<string> adressTemper = new();
+				foreach (KeyValuePair<string, CollectAssetInfo> collectInfoPair in result)
+				{
+					if (collectInfoPair.Value.CollectorType == ECollectorType.MainAssetCollector)
+					{
+						string address = collectInfoPair.Value.Address;
+						if (adressTemper.Contains(address) == false)
+							adressTemper.Add(address);
+						else
+							throw new($"The address is existed : {address} in collector : {CollectPath}");
+					}
+				}
+			}
+
+			// 返回列表
+			return result.Values.ToList();
+		}
+
+		private CollectAssetInfo CreateCollectAssetInfo(CollectCommand command, AssetBundleCollectorGroup group, string assetPath, bool isRawFilePackRule)
+		{
+			string address = GetAddress(group, assetPath);
+			string bundleName = GetBundleName(command, group, assetPath);
+			List<string> assetTags = GetAssetTags(group);
+			CollectAssetInfo collectAssetInfo = new(CollectorType, bundleName, address, assetPath, isRawFilePackRule, assetTags);
+
+			// 注意：模拟构建模式下不需要收集依赖资源
+			if (command.BuildMode == EBuildMode.SimulateBuild)
+				collectAssetInfo.DependAssets = new();
+			else
+				collectAssetInfo.DependAssets = GetAllDependencies(assetPath, isRawFilePackRule);
+
+			return collectAssetInfo;
+		}
+		private bool IsValidateAsset(string assetPath, bool isRawFilePackRule)
+		{
+			if (assetPath.StartsWith("Assets/") == false && assetPath.StartsWith("Packages/") == false)
+			{
+				Debug.LogError($"Invalid asset path : {assetPath}");
+				return false;
+			}
+
+			// 忽略文件夹
+			if (AssetDatabase.IsValidFolder(assetPath))
+				return false;
+
+			// 忽略编辑器下的类型资源
+			Type type = AssetDatabase.GetMainAssetTypeAtPath(assetPath);
+			if (type == typeof(LightingDataAsset))
+				return false;
+
+			// 检测原生文件是否合规
+			if (isRawFilePackRule)
+			{
+				string extension = StringUtility.RemoveFirstChar(System.IO.Path.GetExtension(assetPath));
+				if (extension == EAssetFileExtension.Unity.ToString() || extension == EAssetFileExtension.Prefab.ToString() ||
+					extension == EAssetFileExtension.Mat.ToString() || extension == EAssetFileExtension.Controller.ToString() ||
+					extension == EAssetFileExtension.FBX.ToString() || extension == EAssetFileExtension.Anim.ToString() ||
+					extension == EAssetFileExtension.Shader.ToString())
+				{
+					Debug.LogWarning($"Raw file pack rule can not support file estension : {extension}");
+					return false;
+				}
+
+				// 注意：原生文件只支持无依赖关系的资源
+				string[] depends = AssetDatabase.GetDependencies(assetPath, true);
+				if (depends.Length != 1)
+				{
+					Debug.LogWarning($"Raw file pack rule can not support estension : {extension}");
+					return false;
+				}
+			}
+			else
+			{
+				// 忽略Unity无法识别的无效文件
+				// 注意：只对非原生文件收集器处理
+				if (type == typeof(DefaultAsset))
+				{
+					Debug.LogWarning($"Cannot pack default asset : {assetPath}");
+					return false;
+				}
+			}
+
+			string fileExtension = System.IO.Path.GetExtension(assetPath);
+			if (IsIgnoreFile(fileExtension))
+				return false;
+
+			return true;
+		}
+		private bool IsIgnoreFile(string fileExtension)
+		{
+			foreach (string extension in DefaultFilterRule.IgnoreFileExtensions)
+			{
+				if (extension == fileExtension)
+					return true;
+			}
+			return false;
+		}
+		private bool IsCollectAsset(string assetPath)
+		{
+			Type assetType = AssetDatabase.GetMainAssetTypeAtPath(assetPath);
+			if (assetType == typeof(Shader) || assetType == typeof(ShaderVariantCollection))
+				return true;
+
+			// 根据规则设置过滤资源文件
+			IFilterRule filterRuleInstance = AssetBundleCollectorSettingData.GetFilterRuleInstance(FilterRuleName);
+			return filterRuleInstance.IsCollectAsset(new(assetPath));
+		}
+		private string GetAddress(AssetBundleCollectorGroup group, string assetPath)
+		{
+			if (CollectorType != ECollectorType.MainAssetCollector)
+				return string.Empty;
+
+			IAddressRule addressRuleInstance = AssetBundleCollectorSettingData.GetAddressRuleInstance(AddressRuleName);
+			string adressValue = addressRuleInstance.GetAssetAddress(new(assetPath, CollectPath, group.GroupName, UserData));
+			return adressValue;
+		}
+		private string GetBundleName(CollectCommand command, AssetBundleCollectorGroup group, string assetPath)
+		{
+			Type assetType = AssetDatabase.GetMainAssetTypeAtPath(assetPath);
+			if (assetType == typeof(Shader) || assetType == typeof(ShaderVariantCollection))
+			{
+				// 获取着色器打包规则结果
+				PackRuleResult packRuleResult = DefaultPackRule.CreateShadersPackRuleResult();
+				return packRuleResult.GetMainBundleName(command.PackageName, command.UniqueBundleName);
+			}
+			else
+			{
+				// 获取其它资源打包规则结果
+				IPackRule packRuleInstance = AssetBundleCollectorSettingData.GetPackRuleInstance(PackRuleName);
+				PackRuleResult packRuleResult = packRuleInstance.GetPackRuleResult(new(assetPath, CollectPath, group.GroupName, UserData));
+				return packRuleResult.GetMainBundleName(command.PackageName, command.UniqueBundleName);
+			}
+		}
+		private List<string> GetAssetTags(AssetBundleCollectorGroup group)
+		{
+			List<string> tags = group.AssetTags.StringToStringList(';');
+			List<string> temper = AssetTags.StringToStringList(';');
+			tags.AddRange(temper);
+			return tags;
+		}
+		private List<string> GetAllDependencies(string mainAssetPath, bool isRawFilePackRule)
+		{
+			List<string> result = new();
+			string[] depends = AssetDatabase.GetDependencies(mainAssetPath, true);
+			foreach (string assetPath in depends)
+			{
+				if (IsValidateAsset(assetPath, isRawFilePackRule))
+				{
+					// 注意：排除主资源对象
+					if (assetPath != mainAssetPath)
+						result.Add(assetPath);
+				}
+			}
+			return result;
+		}
+	}
+}

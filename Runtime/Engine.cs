@@ -42,11 +42,20 @@ namespace Universe
             return true;
         }
 
+        /// <summary>
+        /// 开启全局协程
+        /// </summary>
+        /// <param name="routine"></param>
+        /// <returns></returns>
         public static Coroutine StartGlobalCoroutine(IEnumerator routine)
         {
             return Root.StartCoroutine(routine);
         }
 
+        /// <summary>
+        /// 停止全局协程
+        /// </summary>
+        /// <param name="routine"></param>
         public static void StopGlobalCoroutine(Coroutine routine)
         {
             Root.StopCoroutine(routine);

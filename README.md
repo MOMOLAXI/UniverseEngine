@@ -7,7 +7,9 @@
 
   2. 左上角“+”号，Add package from gir url
 
-  3. 输入 https://github.com/MOMOLAXI/UniverseEngine.git , 点击Add
+  3. 输入GitHub链接 https://github.com/MOMOLAXI/UniverseEngine.git 
 
-     
+     或者Gitee链接 : https://gitee.com/boxinyuan/UniverseEngine.git
+
+  4. 点击Add等待编译即可
 
